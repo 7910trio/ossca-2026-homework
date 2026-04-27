@@ -1,0 +1,84 @@
+name: 01-week
+
+on:
+  pull_request:
+    paths:
+      - '01-week/**'
+  workflow_dispatch:
+    inputs:
+      submitter:
+        description: 'Submitter GitHub login under 01-week/'
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 01-week/checker/go.mod
+
+      - name: resolve submitter directory
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            SUBMITTER="${{ github.event.pull_request.user.login }}"
+          else
+            SUBMITTER="${{ inputs.submitter }}"
+          fi
+
+          if [ -z "$SUBMITTER" ]; then
+            echo "Submitter is required."
+            exit 1
+          fi
+
+          echo "SUBMITTER=$SUBMITTER" >> "$GITHUB_ENV"
+          echo "TARGET_DIR=01-week/$SUBMITTER" >> "$GITHUB_ENV"
+
+      - name: check submitter directory exists
+        run: |
+          if [ ! -d "$TARGET_DIR" ]; then
+            echo "Submission directory not found: $TARGET_DIR"
+            exit 1
+          fi
+
+      - name: restore checker cache
+        id: checker-cache
+        uses: actions/cache@v4
+        with:
+          path: 01-week/checker/checker
+          key: ${{ runner.os }}-01-week-checker-${{ hashFiles('01-week/checker/go.mod', '01-week/checker/main.go', '01-week/checker/Makefile') }}
+
+      - name: build checker
+        if: steps.checker-cache.outputs.cache-hit != 'true'
+        run: make build
+        working-directory: 01-week/checker
+
+      - name: build submission
+        run: |
+          cd "$TARGET_DIR"
+          make build
+
+          if [ ! -f "./app" ]; then
+            echo "Build output not found: $TARGET_DIR/app"
+            exit 1
+          fi
+
+      - name: run app and validate with checker
+        run: |
+          set -euo pipefail
+
+          APP_LOG="${RUNNER_TEMP}/01-week-app.log"
+          cd "$TARGET_DIR"
+          sudo timeout 20s ./app >"$APP_LOG" 2>&1 &
+
+          sleep 1
+
+          if ! timeout 15s sudo "${GITHUB_WORKSPACE}/01-week/checker/checker"; then
+            echo "==== app log ===="
+            cat "$APP_LOG"
+            exit 1
+          fi
